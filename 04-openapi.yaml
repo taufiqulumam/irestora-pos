@@ -1,0 +1,468 @@
+openapi: 3.0.3
+info:
+  title: POS F&B API
+  version: "1.0.0"
+  description: >
+    Spesifikasi API awal untuk sistem POS F&B multi-outlet.
+    Dokumen ini adalah draft tahap planning — endpoint dapat berkembang
+    seiring detail development. Lihat 02-SDD.md dan 03-ERD.md untuk konteks.
+
+servers:
+  - url: https://api.example.com
+    description: Production (placeholder)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+  - name: Outlets
+  - name: Menus
+  - name: Orders
+  - name: Tables
+  - name: Sync
+  - name: Shifts
+  - name: Fraud
+
+paths:
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login and receive an access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+        "401":
+          description: Invalid credentials
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get authenticated user details
+      responses:
+        "200":
+          description: OK
+        "401":
+          description: Authorization header missing or malformed
+
+  /api/outlets:
+    get:
+      tags: [Outlets]
+      summary: List outlets accessible by the authenticated user
+      responses:
+        "200":
+          description: OK
+
+  /api/menus:
+    get:
+      tags: [Menus]
+      summary: Get menu list with prices for a given outlet
+      description: >
+        Digunakan kasir app untuk refresh cache lokal (IndexedDB) saat online.
+      parameters:
+        - name: outlet_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Menu"
+
+  /api/orders/sync:
+    post:
+      tags: [Sync]
+      summary: Kirim batch transaksi dari kasir app (offline sync)
+      description: >
+        Endpoint idempotent — jika `id` (UUID) transaksi sudah pernah
+        diterima sebelumnya, server mengabaikan duplikat dan mengembalikan
+        status "already_synced" tanpa membuat data baru.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                orders:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/OrderSyncPayload"
+      responses:
+        "200":
+          description: Batch processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        status:
+                          type: string
+                          enum: [synced, already_synced, rejected]
+                        reason: { type: string, nullable: true }
+
+  /api/orders:
+    get:
+      tags: [Orders]
+      summary: List orders (untuk Admin Panel / laporan)
+      parameters:
+        - name: outlet_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: date_from
+          in: query
+          schema: { type: string, format: date }
+        - name: date_to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: OK
+    post:
+      tags: [Orders]
+      summary: Buka order baru (kasir) - pilih dine_in atau takeaway
+      description: >
+        Kasir wajib menentukan orderType terlebih dahulu (lihat 02-SDD.md §4.7.1).
+        tableId wajib diisi jika orderType=dine_in, dan wajib kosong jika takeaway.
+        tableId yang dipilih harus berstatus available - meja langsung berubah
+        status jadi occupied setelah order berhasil dibuka.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderType]
+              properties:
+                orderType: { type: string, enum: [dine_in, takeaway] }
+                tableId: { type: string, format: uuid, nullable: true }
+      responses:
+        "201":
+          description: Order dibuka, status open
+        "422":
+          description: tableId tidak konsisten dengan orderType, atau meja tidak berstatus available
+        "409":
+          description: Kasir belum membuka shift
+
+  /api/tables/{tableId}/cart/submit:
+    post:
+      tags: [Orders]
+      summary: Submit cart customer sebagai Batch pesanan baru (order_batch)
+      description: >
+        Dipanggil oleh Customer App setelah customer selesai memilih item di cart
+        dan menekan submit. Jika meja belum punya order aktif, server membuat
+        order baru (status open) terlebih dahulu. Batch yang dihasilkan berstatus
+        pending_confirmation sampai dikonfirmasi kasir.
+      parameters:
+        - name: tableId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [menuId, qty]
+                    properties:
+                      menuId: { type: string, format: uuid }
+                      qty: { type: integer }
+                      notes: { type: string, nullable: true }
+      responses:
+        "201":
+          description: Batch dibuat dengan status pending_confirmation
+        "404":
+          description: Meja tidak ditemukan / QR token tidak valid
+        "409":
+          description: Outlet belum memiliki shift aktif, order tidak dapat dibuat (lihat 02-SDD.md §4.7.2)
+
+  /api/order-batches/{batchId}/confirm:
+    post:
+      tags: [Orders]
+      summary: Kasir mengkonfirmasi atau menolak Batch pesanan dari customer
+      parameters:
+        - name: batchId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [confirm, reject] }
+                reason: { type: string, nullable: true }
+      responses:
+        "200":
+          description: >
+            Batch dikonfirmasi (item masuk ke kitchen order & total order
+            diperbarui) atau ditolak
+
+  /api/tables/{tableId}/close:
+    post:
+      tags: [Tables]
+      summary: Tutup meja secara manual (kasir) - meja kembali berstatus available
+      description: >
+        Hanya bisa dilakukan jika order aktif di meja tsb sudah berstatus paid.
+        Bisa dilakukan kasir manapun yang sedang shift aktif di outlet tersebut
+        (tidak harus kasir yang membuka order). Aksi ini tercatat di audit_logs
+        (action=close_table) - lihat 02-SDD.md §4.7.1.
+      parameters:
+        - name: tableId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  {
+                    type: string,
+                    nullable: true,
+                    description: "Catatan opsional, misal 'meja sudah dibersihkan'",
+                  }
+      responses:
+        "200":
+          description: Meja kembali berstatus available
+        "404":
+          description: Meja tidak ditemukan
+        "422":
+          description: Meja tidak punya order aktif, atau order belum berstatus paid
+        "409":
+          description: Kasir belum membuka shift
+
+  /api/orders/{orderId}/void:
+    post:
+      tags: [Orders]
+      summary: Void an order (butuh approval PIN supervisor)
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, approved_by_pin]
+              properties:
+                reason: { type: string }
+                approved_by_pin: { type: string }
+      responses:
+        "200":
+          description: Order voided, tercatat di audit_logs
+        "403":
+          description: PIN approval tidak valid / tidak memiliki izin
+
+  /api/shifts/open:
+    post:
+      tags: [Shifts]
+      summary: Buka shift kasir
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outlet_id, opening_cash]
+              properties:
+                outlet_id: { type: string, format: uuid }
+                opening_cash: { type: number }
+      responses:
+        "201":
+          description: Shift dibuka
+
+  /api/shifts/{shiftId}/close:
+    post:
+      tags: [Shifts]
+      summary: Tutup shift kasir, hitung selisih kas
+      parameters:
+        - name: shiftId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [closing_cash_actual]
+              properties:
+                closing_cash_actual: { type: number }
+      responses:
+        "200":
+          description: >
+            Shift ditutup. Jika cash_difference melebihi toleransi,
+            otomatis memicu fraud_alert (rule: cash_mismatch)
+
+  /api/fraud-alerts:
+    get:
+      tags: [Fraud]
+      summary: List fraud alerts (Admin Panel dashboard)
+      parameters:
+        - name: outlet_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, reviewed, dismissed]
+      responses:
+        "200":
+          description: OK
+
+  /api/fraud-alerts/{alertId}/review:
+    post:
+      tags: [Fraud]
+      summary: Tandai fraud alert sebagai reviewed/dismissed
+      parameters:
+        - name: alertId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [reviewed, dismissed] }
+                notes: { type: string, nullable: true }
+      responses:
+        "200":
+          description: OK
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: token
+
+  schemas:
+    RegisterRequest:
+      type: object
+      required: [email, password, fullName, phone]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8 }
+        fullName: { type: string }
+        phone: { type: string }
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+
+    Menu:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        categoryId: { type: string, format: uuid }
+        name: { type: string }
+        price: { type: number }
+        isActive: { type: boolean }
+
+    OrderSyncPayload:
+      type: object
+      required: [id, outletId, orderType, shiftId, items, createdAtClient]
+      properties:
+        id:
+          { type: string, format: uuid, description: "UUID di-generate client" }
+        outletId: { type: string, format: uuid }
+        orderType: { type: string, enum: [dine_in, takeaway] }
+        tableId:
+          {
+            type: string,
+            format: uuid,
+            nullable: true,
+            description: "Wajib diisi jika orderType=dine_in, wajib null jika takeaway",
+          }
+        shiftId: { type: string, format: uuid }
+        orderNumber: { type: string }
+        deviceId: { type: string }
+        createdAtClient: { type: string, format: date-time }
+        subtotal:
+          {
+            type: number,
+            description: "Dihitung client, divalidasi ulang oleh server",
+          }
+        discountTotal: { type: number }
+        serviceChargeTotal:
+          {
+            type: number,
+            description: "Dihitung dari (subtotal - discountTotal) x outlet.serviceChargeRate",
+          }
+        pb1Total:
+          {
+            type: number,
+            description: "PBJT/PB1 (pajak restoran daerah, bukan PPN) — lihat 03-ERD.md §4",
+          }
+        roundingAdjustment: { type: number }
+        grandTotal: { type: number }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              menuId: { type: string, format: uuid }
+              menuNameSnapshot: { type: string }
+              priceSnapshot: { type: number }
+              qty: { type: integer }
+              notes: { type: string, nullable: true }
+        payments:
+          type: array
+          items:
+            type: object
+            properties:
+              method: { type: string, enum: [cash, qris, card, other] }
+              amount: { type: number }
+              referenceNumber: { type: string, nullable: true }

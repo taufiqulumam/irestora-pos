@@ -1,0 +1,32 @@
+{
+  "name": "irestora-pos",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": [
+    "frontend/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm:dev:backend\" \"npm:dev:cashier\" \"npm:dev:customer\" \"npm:dev:admin\"",
+    "dev:backend": "cd backend && php artisan serve",
+    "dev:cashier": "npm run dev --workspace=frontend/cashier",
+    "dev:customer": "npm run dev --workspace=frontend/customer",
+    "dev:admin": "npm run dev --workspace=frontend/admin",
+    "build": "npm run build --workspaces --if-present",
+    "build:cashier": "npm run build --workspace=frontend/cashier",
+    "build:customer": "npm run build --workspace=frontend/customer",
+    "build:admin": "npm run build --workspace=frontend/admin",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "generate:types": "npm run generate:types --workspace=frontend/shared",
+    "docker:up": "docker compose -f docker/docker-compose.yml up -d",
+    "docker:down": "docker compose -f docker/docker-compose.yml down"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  }
+}

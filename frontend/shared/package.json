@@ -1,0 +1,17 @@
+{
+  "name": "@irestora/shared",
+  "version": "0.0.1",
+  "private": true,
+  "main": "index.ts",
+  "types": "types/index.d.ts",
+  "scripts": {
+    "generate:types": "ts-node scripts/generate-types.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "openapi-typescript": "^6.7.5",
+    "ts-node": "^10.9.2",
+    "@types/node": "^20.12.12"
+  }
+}
