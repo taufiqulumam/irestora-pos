@@ -56,6 +56,7 @@ backend/bootstrap/cache/*
 docker-compose.override.yml
 
 # Misc
+*.md
 *.pem
 *.key
 *.crt
